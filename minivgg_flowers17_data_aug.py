@@ -1,0 +1,73 @@
+import warnings
+warnings.simplefilter('ignore')
+from hvdev.preprocessing import ImageToArrayPreprocessor
+from hvdev.preprocessing import AspectAwerePreprocessor
+from hvdev.datasets import SimpleDatasetLoader
+from hvdev.nn.cnn import MiniVggNet
+from sklearn.preprocessing import LabelBinarizer
+from sklearn.metrics import classification_report
+from sklearn.model_selection import train_test_split
+from keras.optimizers import SGD
+from keras.preprocessing.image import ImageDataGenerator
+from imutils import paths
+import matplotlib.pyplot as plt 
+import numpy as np 
+import imutils
+import os 
+import argparse
+
+ap = argparse.ArgumentParser()
+ap.add_argument('-d', '--dataset', required = True, help = "path to the image")
+ap.add_argument('-o', '--output', required = True , help = "path to save output plot")
+args =  vars(ap.parse_args())
+
+print('[INFO] loading dataset...')
+imagePaths = list(paths.list_images(args['dataset']))
+classeNames = [pt.split(os.path.sep)[-2] for pt in imagePaths]
+classeNames = [str(x) for x in np.unique(classeNames)]
+
+aap = AspectAwerePreprocessor(64, 64)
+iam = ImageToArrayPreprocessor()
+sdl = SimpleDatasetLoader(preprocessors = [aap, iam])
+
+(data , labels) = sdl.load(imagePaths , verbose = 500)
+
+data = data.astype('float32')/255.0
+print('[INFO] features matrix {:.1f}MB'.format(data.nbytes/(1024*1024.0)))
+
+(trainX, testX, trainY, testY) = train_test_split(data , labels , test_size = 0.25,
+    random_state = 42)
+
+testY = LabelBinarizer().fit_transform(testY)
+trainY = LabelBinarizer().fit_transform(trainY)
+
+aug = ImageDataGenerator(rotation_range = 30 , zoom_range = 0.2, shear_range = 0.2,
+    width_shift_range = 0.1 , height_shift_range = 0.1, horizontal_flip = True,
+    fill_mode = 'nearest')
+
+print('[INFO] Compiling model...')
+model = MiniVggNet().build(width = 64, height = 64 , depth = 3, classes = len(classeNames))
+opt = SGD(lr = 0.05)
+model.compile(loss = 'categorical_crossentropy', optimizer = opt, metrics = ['accuracy'])
+
+print('[INFO] Training Network...')
+H = model.fit_generator(aug.flow(trainX , trainY , batch_size = 32),validation_data = (testX, testY),
+    epochs = 100, steps_per_epoch = len(trainX)//32, verbose = 1)
+
+print('[iNFO] Evaluating model...')
+predictions = model.predict(testX , batch_size = 32).argmax(axis = 1)
+print(classification_report(testY.argmax(axis = 1), predictions, target_names = classeNames))
+
+print('[INFO] ploting...')
+plt.style.use('ggplot')
+plt.figure()
+plt.plot(np.arange(0 , 100), H.history['loss'], label = 'train_loss')
+plt.plot(np.arange(0 , 100), H.history['val_loss'], label = 'val_loss')
+plt.plot(np.arange(0 , 100), H.history['acc'], label = "train_acc")
+plt.plot(np.arange(0 , 100), H.history['val_acc'], label = 'val_acc')
+plt.title('Training Loss and Acurracy')
+plt.xlabel('#epochs')
+plt.ylabel('loss/acc')
+plt.legend()
+plt.savefig(args['output'])
+plt.show()
